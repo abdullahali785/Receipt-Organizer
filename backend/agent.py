@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,21 @@ _IMAGE_MEDIA_TYPES = {
 }
 SUPPORTED_EXTENSIONS = set(_IMAGE_MEDIA_TYPES) | {".pdf"}
 
+# Claude rejects images over 5 MB once base64-encoded (which inflates by 4/3),
+# so cap raw image bytes at 3.75 MB. The mobile app compresses well below this.
+MAX_IMAGE_BYTES = 3_750_000
+MAX_PDF_BYTES = 15 * 1024 * 1024
+
+# Client errors that will fail the same way on retry (bad image, bad key, ...).
+_NON_RETRYABLE = (
+    anthropic.BadRequestError,
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+    anthropic.NotFoundError,
+)
+
+log = logging.getLogger(__name__)
+
 
 # --------------------------------------------------------------------------- #
 # Errors
@@ -47,6 +63,10 @@ SUPPORTED_EXTENSIONS = set(_IMAGE_MEDIA_TYPES) | {".pdf"}
 
 class UnsupportedFileType(ValueError):
     """Raised when the uploaded file is not an image or PDF we can read."""
+
+
+class FileTooLarge(ValueError):
+    """Raised when the file exceeds what Claude accepts for its type."""
 
 
 class ExtractionError(RuntimeError):
@@ -150,18 +170,40 @@ def extract_receipt(
     max_retries: int = 1,
     client: Optional[anthropic.Anthropic] = None,
 ) -> Receipt:
-    """Extract structured data from a receipt image or PDF.
+    """Extract structured data from a receipt image or PDF on disk.
 
-    Uses Claude's vision + structured outputs, so the returned object is always
-    schema-valid. Retries once on a transient/malformed response.
-
-    Raises UnsupportedFileType for non-image/PDF inputs, and ExtractionError if
-    Claude cannot produce usable data after the retries.
+    Raises UnsupportedFileType for non-image/PDF inputs, FileTooLarge for
+    oversized files, and ExtractionError if Claude cannot produce usable data.
     """
-    media_block = _build_media_block(file_path)  # validates the file type
+    media_block = _build_media_block(file_path)  # validates the file
+    return _extract(media_block, model=model, max_retries=max_retries, client=client)
 
-    # Offline demo path: exercise the full UI + categorizer + Sheets flow without
-    # calling (or paying for) the API. Enable with MOCK_EXTRACTION=1.
+
+def extract_receipt_bytes(
+    data: bytes,
+    *,
+    model: Optional[str] = None,
+    max_retries: int = 1,
+    client: Optional[anthropic.Anthropic] = None,
+) -> Receipt:
+    """Like extract_receipt, but for an in-memory upload. The file type is
+    detected from the bytes themselves, not from a filename."""
+    media_block = _media_block_from_bytes(data)
+    return _extract(media_block, model=model, max_retries=max_retries, client=client)
+
+
+def _extract(
+    media_block: dict,
+    *,
+    model: Optional[str],
+    max_retries: int,
+    client: Optional[anthropic.Anthropic],
+) -> Receipt:
+    """Call Claude with vision + structured outputs, so the returned object is
+    always schema-valid. Retries once on a transient or malformed response;
+    refusals and client errors fail immediately since a retry can't help."""
+    # Offline demo path: exercise the full flow without calling (or paying for)
+    # the API. Enable with MOCK_EXTRACTION=1.
     if _mock_enabled():
         return _mock_receipt()
 
@@ -185,14 +227,19 @@ def extract_receipt(
                 messages=messages,
                 output_format=Receipt,
             )
-            if response.stop_reason == "refusal":
-                raise ExtractionError("Claude declined to process this document.")
-            receipt = response.parsed_output
-            if receipt is None:
-                raise ExtractionError("Claude returned no parseable structured output.")
-            return receipt
+        except _NON_RETRYABLE as exc:
+            raise ExtractionError(f"Claude API rejected the request: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - retry any transient failure once
+            log.warning("Extraction attempt %d failed: %s", _attempt + 1, exc)
             last_error = exc
+            continue
+
+        if response.stop_reason == "refusal":
+            raise ExtractionError("Claude declined to process this document.")
+        receipt = response.parsed_output
+        if receipt is not None:
+            return receipt
+        last_error = ExtractionError("Claude returned no parseable structured output.")
 
     raise ExtractionError(
         f"Extraction failed after {max_retries + 1} attempt(s): {last_error}"
@@ -230,6 +277,7 @@ def categorize(
         )
         return Categorization(category, "claude")
     except Exception:  # noqa: BLE001 - degrade to default rather than fail the row
+        log.warning("Claude categorization failed; using default", exc_info=True)
         return Categorization(categorizer.DEFAULT_CATEGORY, "default")
 
 
@@ -316,24 +364,46 @@ def _build_media_block(file_path: str | os.PathLike) -> dict:
             f"Unsupported file type '{ext or path.name}'. Supported: {supported}"
         )
 
-    data_b64 = base64.standard_b64encode(path.read_bytes()).decode("ascii")
+    return _media_block_from_bytes(path.read_bytes())
 
-    if ext == ".pdf":
-        return {
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": data_b64,
-            },
-        }
+
+def detect_media_type(data: bytes) -> str:
+    """Identify a supported file from its leading magic bytes."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"hevc"):
+        raise UnsupportedFileType("HEIC photos aren't supported. Convert to JPEG first.")
+    raise UnsupportedFileType(
+        "Unsupported file. Upload a JPEG, PNG, GIF, or WEBP image, or a PDF."
+    )
+
+
+def _media_block_from_bytes(data: bytes) -> dict:
+    """Build the image/document content block for the Messages API."""
+    media_type = detect_media_type(data)
+    is_pdf = media_type == "application/pdf"
+
+    limit = MAX_PDF_BYTES if is_pdf else MAX_IMAGE_BYTES
+    if len(data) > limit:
+        raise FileTooLarge(
+            f"File is {len(data) / 1_000_000:.1f} MB; the limit for this type is "
+            f"{limit / 1_000_000:.2f} MB."
+        )
 
     return {
-        "type": "image",
+        "type": "document" if is_pdf else "image",
         "source": {
             "type": "base64",
-            "media_type": _IMAGE_MEDIA_TYPES[ext],
-            "data": data_b64,
+            "media_type": media_type,
+            "data": base64.standard_b64encode(data).decode("ascii"),
         },
     }
 
@@ -356,7 +426,7 @@ if __name__ == "__main__":
     try:
         receipt = extract_receipt(sys.argv[1])
         category = categorize(receipt.vendor, receipt.line_items)
-    except (UnsupportedFileType, ExtractionError) as err:
+    except (UnsupportedFileType, FileTooLarge, ExtractionError) as err:
         print(f"Error: {err}")
         raise SystemExit(1)
 

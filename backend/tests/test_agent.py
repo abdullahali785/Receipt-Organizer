@@ -6,17 +6,21 @@ Claude is replaced by a fake client, so these run offline and for free.
 import json
 from types import SimpleNamespace
 
+import anthropic
+import httpx
 import pytest
 
 import agent
 import categorizer
 from agent import (
     ExtractionError,
+    FileTooLarge,
     LineItem,
     Receipt,
     UnsupportedFileType,
     categorize,
     extract_receipt,
+    extract_receipt_bytes,
 )
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -147,10 +151,78 @@ def test_extract_gives_up_after_retries(jpg):
         extract_receipt(jpg, client=client)
 
 
-def test_extract_refusal_raises(jpg):
-    client = fake_client(parsed(None, "refusal"), parsed(None, "refusal"))
+def test_extract_refusal_raises_without_retry(jpg):
+    client = fake_client(parsed(None, "refusal"))
     with pytest.raises(ExtractionError):
         extract_receipt(jpg, client=client)
+    assert len(client.messages.calls) == 1
+
+
+def test_extract_client_error_is_not_retried(jpg):
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    bad = anthropic.BadRequestError(
+        "image too big", response=httpx.Response(400, request=request), body=None
+    )
+    client = fake_client(bad)
+    with pytest.raises(ExtractionError):
+        extract_receipt(jpg, client=client)
+    assert len(client.messages.calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# extract_receipt_bytes / file sniffing
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(
+    "data,media_type",
+    [
+        (JPEG_BYTES, "image/jpeg"),
+        (PNG_BYTES, "image/png"),
+        (b"GIF89a" + b"\x00" * 16, "image/gif"),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
+        (PDF_BYTES, "application/pdf"),
+    ],
+)
+def test_detect_media_type(data, media_type):
+    assert agent.detect_media_type(data) == media_type
+
+
+def test_extension_is_ignored_in_favor_of_content(tmp_path):
+    path = tmp_path / "actually-a-png.jpg"
+    path.write_bytes(PNG_BYTES)
+    assert agent._build_media_block(path)["source"]["media_type"] == "image/png"
+
+
+def test_heic_is_rejected_with_a_clear_message():
+    heic = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 16
+    with pytest.raises(UnsupportedFileType, match="HEIC"):
+        extract_receipt_bytes(heic, client=fake_client())
+
+
+def test_unknown_bytes_rejected():
+    with pytest.raises(UnsupportedFileType):
+        extract_receipt_bytes(b"hello world", client=fake_client())
+
+
+def test_oversized_image_rejected_before_calling_claude():
+    client = fake_client()
+    big = JPEG_BYTES + b"\x00" * agent.MAX_IMAGE_BYTES
+    with pytest.raises(FileTooLarge):
+        extract_receipt_bytes(big, client=client)
+    assert client.messages.calls == []
+
+
+def test_pdf_has_a_higher_limit():
+    pdf = PDF_BYTES + b"\x00" * agent.MAX_IMAGE_BYTES
+    receipt = extract_receipt_bytes(pdf, client=fake_client(parsed(SAMPLE)))
+    assert receipt == SAMPLE
+
+
+def test_extract_bytes_returns_parsed_receipt():
+    client = fake_client(parsed(SAMPLE))
+    assert extract_receipt_bytes(PNG_BYTES, client=client) == SAMPLE
+    image, _ = client.messages.calls[0]["messages"][0]["content"]
+    assert image["source"]["media_type"] == "image/png"
 
 
 def test_extract_empty_output_raises(jpg):
