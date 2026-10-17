@@ -1,0 +1,19 @@
+{
+  "receipt": {
+    "category": "Groceries",
+    "category_source": "claude",
+    "confidence": "medium",
+    "currency": null,
+    "date": null,
+    "line_items": [
+      { "amount": 1.0, "description": "2 APPLE" },
+      { "amount": 1.5, "description": "3 BANANA" },
+      { "amount": 2.8, "description": "1 CHEESE" },
+      { "amount": 1.2, "description": "1 YOGURT" }
+    ],
+    "needs_review": true,
+    "review_reason": "No date printed on receipt and currency is not indicated.",
+    "total_amount": 27.35,
+    "vendor": "Green Supermarket"
+  }
+}
