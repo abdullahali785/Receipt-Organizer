@@ -1,0 +1,20 @@
+# Render Blueprint: New → Blueprint → pick this repo.
+# Secrets (sync: false) are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: receipt-organizer-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Extraction can take 10-30 s, so allow well past gunicorn's 30 s default.
+    startCommand: gunicorn "app:create_app()" --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --access-logfile -
+    healthCheckPath: /v1/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.3
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: API_TOKEN
+        sync: false
