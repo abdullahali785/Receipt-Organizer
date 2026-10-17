@@ -1,183 +1,197 @@
 # 🧾 Receipt & Expense Organizer
 
-An **AI agent** that turns a photo or PDF of a receipt into a clean, categorized
-row in your Google Sheet. Upload a receipt and the agent *reads* it with Claude's
-vision, *decides* what expense category it belongs to, and *acts* by logging it —
-flagging anything it isn't confident about for manual review instead of guessing.
+Snap a photo of a receipt on your phone and get back a clean, categorized expense.
+A small Flask API uses **Claude's vision** to read the receipt, then categorizes it
+with editable keyword rules first and Claude as the fallback.
+The **Expo / React Native** app lets you review the result, keeps your records in a
+sortable table, and shows a monthly spending summary.
 
-It's a small, practical agent loop: **perceive → categorize → store**, wrapped in
-a minimal web UI.
+Your expense data stays on your phone (SQLite). The server stores nothing, and the
+Anthropic API key never leaves the server.
 
----
+| Capture | Review | Records | Summary |
+|---|---|---|---|
+| _screenshot_ | _screenshot_ | _screenshot_ | _screenshot_ |
 
-## What it does
+<!-- Add images to docs/screenshots/ and replace the cells, e.g. ![Capture](docs/screenshots/capture.png) -->
 
-- **Extracts** vendor, date, total, currency, and line items from messy, rotated,
-  or low-quality receipt images (JPG/PNG/GIF/WEBP) and PDFs, using Claude's vision
-  + **structured outputs** (so the JSON is always schema-valid).
-- **Categorizes** each expense with fast, editable keyword **rules** first
-  (e.g. `starbucks → Food & Drink`, `uber → Transportation`), falling back to
-  **Claude** when no rule matches.
-- **Logs** each receipt as a row in **Google Sheets** (date, vendor, amount,
-  currency, category, review flag, source file).
-- **Flags low-confidence** extractions for manual review rather than inventing
-  values, and **validates + retries** the model response before writing.
+## Features
 
-## How the agent works
+- **Extraction**: vendor, date, total, currency and line items from photos (JPG/PNG/GIF/WEBP) or PDFs, using Claude structured outputs so the JSON always matches the schema.
+- **Categorization**: case-insensitive keyword rules from [`categories.json`](backend/categories.json) (longest match wins, so `uber eats` beats `uber`). Claude only steps in when no rule matches.
+- **Review before saving**: missing fields are highlighted, and low-confidence extractions are flagged instead of guessed.
+- **Records**: a spreadsheet-style table with sortable columns, plus totals per currency.
+- **Monthly summary**: each currency's total, with categories ranked by spend.
+- **Simple auth**: one shared bearer token, kept in the phone's secure keychain.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Phone["📱 Expo app (React Native)"]
+        Cap[Capture<br/>camera / library] --> Resize[Resize + JPEG<br/>expo-image-manipulator]
+        Review[Review form] --> DB[(SQLite<br/>expo-sqlite)]
+        DB --> Records[Records table]
+        DB --> Summary[Monthly summary]
+        Token[API token<br/>SecureStore]
+    end
+
+    subgraph Server["☁️ Flask API on Render"]
+        Extract["POST /v1/extract"] --> Vision[Claude vision<br/>structured output]
+        Vision --> Rules{Keyword rule<br/>matches?}
+        Rules -- yes --> Result[Categorized receipt]
+        Rules -- no --> Fallback[Claude picks category] --> Result
+    end
+
+    Resize -- "multipart upload<br/>Bearer token" --> Extract
+    Result -- JSON --> Review
+    Vision <--> Anthropic[(Anthropic API)]
+    Fallback <--> Anthropic
 ```
-   upload ──▶ agent.extract_receipt()      # Claude vision → strict JSON (Receipt schema)
-                    │
-                    ▼
-             agent.categorize()            # 1) categorizer.py rules
-                    │                       # 2) Claude fallback if no rule hits
-                    ▼
-             sheets.append_receipt()       # gspread → one row in your Sheet
-                    │
-                    ▼
-        confirmation rendered on the page  # vendor, total, category, review badge
-```
 
-## Project structure
+**API** (every endpoint except health needs `Authorization: Bearer <API_TOKEN>`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/health` | Liveness check (no auth) |
+| `GET` | `/v1/categories` | Valid categories for the app's picker |
+| `POST` | `/v1/extract` | Multipart field `receipt` → extracted, categorized receipt |
+
+Errors always look like `{"error": {"code": "...", "message": "..."}}`.
 
 ```
 Receipt-Organizer/
-├── app.py            # Flask single-page UI + JSON API (/ and /api/receipts)
-├── agent.py          # Claude vision extraction + categorization orchestration
-├── categorizer.py    # Pure rule engine (no Claude)
-├── categories.json   # ← Edit this to add vendors/categories, no code changes
-├── sheets.py         # Google Sheets read/write (service-account OR OAuth)
-├── requirements.txt
-├── .env.example      # Copy to .env and fill in
-└── .gitignore        # Ignores .env, credentials, uploads, venv
+├── backend/              # Flask API (Python 3.13)
+│   ├── app.py            # create_app(): routes, auth, error handling
+│   ├── agent.py          # Claude extraction + categorization
+│   ├── categorizer.py    # pure keyword-rule engine
+│   ├── categories.json   # ← edit to add categories / vendor rules
+│   └── tests/            # pytest suite
+├── mobile/               # Expo SDK 57 app (TypeScript, Expo Router)
+│   ├── src/app/          # screens: (tabs)/ Capture, Records, Summary, Settings; review modal
+│   ├── src/api/          # fetch client + Zod schemas
+│   ├── src/db/           # SQLite access
+│   ├── src/lib/          # pure logic (review, sorting, summary, money)
+│   └── eas.json          # Android APK build profile
+├── render.yaml           # Render blueprint for the API
+└── .github/workflows/    # CI: backend + mobile checks
 ```
-
----
 
 ## Setup
 
-### 1. Install
+### Backend
+
+Requires Python 3.13 and an [Anthropic API key](https://console.anthropic.com/settings/keys).
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python3.13 -m venv .venv
+.venv/bin/pip install -r backend/requirements-dev.txt
+
+cp backend/.env.example backend/.env
+# edit backend/.env: set ANTHROPIC_API_KEY and API_TOKEN
+# make a token with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+cd backend
+../.venv/bin/python app.py                     # → http://127.0.0.1:5000
+curl localhost:5000/v1/health
 ```
 
-### 2. Anthropic API key
-
-Copy the template and add your key (keep it in `.env`, **not** `.env.example`):
+To reach the local server from your phone (same Wi-Fi), listen on all interfaces and
+use your computer's LAN IP in the app's Settings, e.g. `http://192.168.1.20:5001`:
 
 ```bash
-cp .env.example .env
-# then edit .env:  ANTHROPIC_API_KEY=sk-ant-...
+../.venv/bin/flask --app app run --host 0.0.0.0 --port 5001
 ```
 
-Get a key at <https://console.anthropic.com/settings/keys>. The default model is
-`claude-opus-4-8` (best receipt accuracy); set `CLAUDE_MODEL=claude-haiku-4-5` in
-`.env` for lower cost at high volume.
+> macOS often uses port 5000 for AirPlay Receiver, so use 5001 if 5000 is taken.
 
-### 3. Google Sheets
+**No API credits?** Set `MOCK_EXTRACTION=1` and every upload returns a canned sample
+receipt, so you can try the whole flow for free.
 
-You need a way for the app to write to a sheet. Two options — the app **auto-detects**
-whichever credentials file it finds.
+### Mobile
 
-**A) Service account (default).** Best when key downloads are allowed:
-
-1. In [Google Cloud Console](https://console.cloud.google.com), create a project.
-2. **Enable the Google Sheets API** (APIs & Services → Library).
-3. Create a **service account** → create a **JSON key** → save it as
-   `credentials.json` in this folder.
-4. Copy the `client_email` from that JSON and **share your sheet** with it (Editor).
-5. Put your sheet's ID in `.env` as `GOOGLE_SHEET_ID` (the `<ID>` in
-   `docs.google.com/spreadsheets/d/<ID>/edit`).
-
-> **If your org blocks service-account keys** (`iam.disableServiceAccountKeyCreation`),
-> either do the above under a **personal Google account**, or use OAuth (option B).
-
-**B) OAuth (sign in as yourself).** No key file, no sheet sharing needed:
-
-1. Create an **OAuth client ID** of type **Desktop app** (APIs & Services →
-   Credentials) → download it as `oauth_client.json` in this folder.
-2. Set `GOOGLE_SHEET_ID` in `.env`, then run `python sheets.py` — a browser opens
-   once to authorize; the token caches to `authorized_user.json`.
-
-**Verify the connection:**
+Requires Node 22 and the [Expo Go](https://expo.dev/go) app on your phone.
+Expo Go must be an SDK 57 build.
 
 ```bash
-python sheets.py          # appends a TEST row you can delete
+cd mobile
+npm install
+npx expo start -c        # scan the QR code with your camera (iOS) or Expo Go (Android)
 ```
 
----
+In the app, open **Settings**, enter the server URL and your `API_TOKEN`, then tap
+**Save & test connection**. The URL defaults to the hosted API.
 
-## Run
-
-```bash
-python app.py             # → http://127.0.0.1:5000
-```
-
-Open the URL, drop in a receipt, and click **Extract & log**.
-
-> **macOS note:** port 5000 is often used by AirPlay Receiver. The app honors a
-> `PORT` env var — e.g. `PORT=5001 python app.py` → <http://127.0.0.1:5001>.
-
-## Try it without API credits (mock mode)
-
-To exercise the full flow (UI → categorizer → Sheets) without calling — or paying
-for — the Claude API, enable the offline demo:
-
-```bash
-MOCK_EXTRACTION=1 python app.py
-```
-
-Every upload returns a sample receipt and logs it, so you can demo the app or test
-your Sheets setup before adding credits. Mock mode is off by default.
-
-## Customize categories
-
-Edit [`categories.json`](categories.json) — add categories and vendor-keyword
-rules with no code changes. Matching is case-insensitive substring; the **longest**
-matching keyword wins (so `uber eats` beats `uber`). Test a match:
-
-```bash
-python categorizer.py "Trader Joe's #451"     # → Groceries (rule match)
-```
-
-## Test the pieces standalone
-
-```bash
-python agent.py path/to/receipt.jpg           # extract + categorize → JSON
-python categorizer.py "Shell Oil"             # rule lookup only
-python sheets.py                              # Sheets connectivity
-```
-
----
+Add packages with `npx expo install <pkg>` so the versions match SDK 57.
 
 ## Environment variables
 
+Backend, set in `backend/.env` locally or in the Render dashboard:
+
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | — | Claude access (extraction + categorization) |
+| `ANTHROPIC_API_KEY` | ✅ | — | Claude access for extraction and categorization |
+| `API_TOKEN` | ✅ | — | Shared secret the app sends as `Bearer <token>` |
 | `CLAUDE_MODEL` | — | `claude-opus-4-8` | Override the model |
-| `GOOGLE_SHEET_ID` | for logging | — | Target sheet ID |
-| `GOOGLE_SERVICE_ACCOUNT_FILE` | one of | `credentials.json` | Service-account key path |
-| `GOOGLE_OAUTH_CLIENT_FILE` | one of | `oauth_client.json` | OAuth client secret path |
-| `GOOGLE_SHEET_WORKSHEET` | — | `Sheet1` | Worksheet/tab name |
-| `GOOGLE_AUTH_MODE` | — | `auto` | `auto` \| `service_account` \| `oauth` |
-| `MOCK_EXTRACTION` | — | off | `1` to use the offline sample receipt |
-| `PORT` | — | `5000` | Flask port |
-| `UPLOAD_DIR` | — | `uploads` | Where uploads are saved |
+| `MOCK_EXTRACTION` | — | off | `1` returns a sample receipt instead of calling Claude |
+| `PORT` | — | `5000` | Dev server port |
 
-## Troubleshooting
+The mobile app needs no env vars. The server URL and token are entered in
+Settings and stored on the device.
 
-- **"credit balance is too low"** — add credits at
-  <https://console.anthropic.com/settings/billing>. Everything else works; only
-  the live vision call needs credits. Use mock mode meanwhile.
-- **"Permission denied" (Sheets)** — share the sheet with the service account's
-  `client_email` as Editor, or authorize OAuth with an account that can edit it.
-- **"Sheets API is not enabled"** — enable it in the *same* project the credentials
-  belong to.
+## Testing
+
+```bash
+# Backend: extraction, categorization and API contract (Claude is mocked)
+cd backend && ../.venv/bin/python -m pytest -q
+
+# Mobile: typecheck, lint, unit + component tests, dependency check
+cd mobile && npx tsc --noEmit && npx expo lint && npx jest && npx expo-doctor
+```
+
+[CI](.github/workflows/ci.yml) runs both suites on every push to `main` and on pull requests.
+
+Test a single piece by hand:
+
+```bash
+cd backend
+../.venv/bin/python categorizer.py "Trader Joe's #451"   # → Groceries (rule match)
+../.venv/bin/python agent.py path/to/receipt.jpg         # extract + categorize → JSON
+```
+
+## Deploy
+
+### API on Render
+
+1. In Render: **New → Blueprint**, then pick this repo. [`render.yaml`](render.yaml) sets up a free web service running gunicorn with a 120 s timeout.
+2. Enter `ANTHROPIC_API_KEY` and `API_TOKEN` in the dashboard. They are never committed.
+3. Every push to `main` redeploys. Render checks `/v1/health` to confirm the server is up.
+
+The free tier sleeps when idle, so the first request after a while can take about
+a minute. The app's timeouts allow for this.
+
+### Android APK with EAS Build
+
+```bash
+cd mobile
+npx eas-cli@latest login
+npx eas-cli@latest build -p android --profile preview
+```
+
+The `preview` profile in [`eas.json`](mobile/eas.json) builds an installable `.apk`
+for internal distribution. EAS links the project and creates a signing key on the
+first run. Open the build link on an Android phone to install it. The APK should
+point at the HTTPS server URL: release builds block plain `http://`.
+
+iOS runs through Expo Go. A TestFlight build would need an Apple Developer account.
+
+## Roadmap
+
+Planned next steps (editing and deleting records, CSV export, an offline upload queue,
+charts and more) are in [IDEAS.md](IDEAS.md).
 
 ## Tech stack
 
-Python · [Anthropic SDK](https://docs.anthropic.com) (Messages API + structured
-outputs) · Flask · gspread + google-auth · python-dotenv
+**Backend:** Python 3.13 · Flask · gunicorn · [Anthropic SDK](https://docs.anthropic.com) (vision + structured outputs) · Pydantic · pytest · Render
+
+**Mobile:** Expo SDK 57 · React Native · TypeScript · Expo Router (native tabs) · expo-sqlite · TanStack Query · Zod · Jest + React Native Testing Library · EAS Build
