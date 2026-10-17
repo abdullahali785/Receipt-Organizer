@@ -185,11 +185,6 @@ point at the HTTPS server URL: release builds block plain `http://`.
 
 iOS runs through Expo Go. A TestFlight build would need an Apple Developer account.
 
-## Roadmap
-
-Planned next steps (editing and deleting records, CSV export, an offline upload queue,
-charts and more) are in [IDEAS.md](IDEAS.md).
-
 ## Tech stack
 
 **Backend:** Python 3.13 · Flask · gunicorn · [Anthropic SDK](https://docs.anthropic.com) (vision + structured outputs) · Pydantic · pytest · Render
