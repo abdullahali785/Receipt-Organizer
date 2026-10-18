@@ -43,7 +43,8 @@
           "photosPermission": "Receipt Organizer reads photos you pick so it can scan receipts.",
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,
