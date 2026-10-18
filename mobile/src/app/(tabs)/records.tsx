@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback } from 'react';
 import { StyleSheet } from 'react-native';
@@ -31,7 +31,10 @@ export default function RecordsScreen() {
           Records
         </ThemedText>
         {data.length > 0 ? (
-          <RecordsTable receipts={data} />
+          <RecordsTable
+            receipts={data}
+            onPressRow={(id) => router.push({ pathname: '/review', params: { id } })}
+          />
         ) : receipts.isPending ? null : (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
             No receipts yet. Scan one from the Capture tab.

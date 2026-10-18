@@ -25,3 +25,11 @@ it('re-sorts rows when the Total header is pressed', async () => {
   expect(screen.getByText('3 receipts')).toBeTruthy();
   expect(screen.getByText(formatMoney(115, 'USD'))).toBeTruthy();
 });
+
+it('reports the tapped row so the screen can open it for editing', async () => {
+  const onPressRow = jest.fn();
+  await render(<RecordsTable receipts={receipts} onPressRow={onPressRow} />);
+
+  await fireEvent.press(screen.getByText('Big'));
+  expect(onPressRow).toHaveBeenCalledWith('big');
+});

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useMemo, useState } from 'react';
 import {
@@ -21,6 +21,7 @@ import { deleteReceipt, getReceipt, saveReceipt, type Receipt } from '@/db/recei
 import { useCategories } from '@/hooks/use-api';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  editorText,
   formFromReceipt,
   missingFields,
   todayIso,
@@ -35,7 +36,13 @@ const COMMON_CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'PKR'];
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const db = useSQLiteContext();
-  const receipt = useQuery({ queryKey: ['receipt', id], queryFn: () => getReceipt(db, id) });
+  // Not cached after the screen closes: the form is seeded once, so a stale
+  // copy would show old values when the same receipt is opened again.
+  const receipt = useQuery({
+    queryKey: ['receipt', id],
+    queryFn: () => getReceipt(db, id),
+    gcTime: 0,
+  });
 
   if (receipt.isPending) {
     return (
@@ -60,6 +67,7 @@ function ReviewEditor({ receipt }: { receipt: Receipt }) {
   const theme = useTheme();
   const categories = useCategories();
   const categoryOptions = categories.data?.categories ?? [receipt.category];
+  const text = editorText(receipt.status);
 
   const [form, setForm] = useState<ReviewForm>(() => formFromReceipt(receipt));
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -87,14 +95,15 @@ function ReviewEditor({ receipt }: { receipt: Receipt }) {
     },
   });
 
-  function discard() {
-    Alert.alert('Discard this receipt?', 'It will not be saved.', [
-      { text: 'Keep editing', style: 'cancel' },
+  function remove() {
+    Alert.alert(text.confirmTitle, text.confirmMessage, [
+      { text: text.keep, style: 'cancel' },
       {
-        text: 'Discard',
+        text: text.remove,
         style: 'destructive',
         onPress: async () => {
           await deleteReceipt(db, receipt.id);
+          await queryClient.invalidateQueries({ queryKey: ['receipts'] });
           router.back();
         },
       },
@@ -103,6 +112,7 @@ function ReviewEditor({ receipt }: { receipt: Receipt }) {
 
   return (
     <ThemedView style={styles.flex}>
+      <Stack.Screen options={{ title: text.title }} />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -214,8 +224,8 @@ function ReviewEditor({ receipt }: { receipt: Receipt }) {
           ) : null}
 
           <View style={styles.actions}>
-            <Button title="Save receipt" onPress={() => save.mutate()} loading={save.isPending} />
-            <Button title="Discard" variant="danger" onPress={discard} />
+            <Button title={text.save} onPress={() => save.mutate()} loading={save.isPending} />
+            <Button title={text.remove} variant="danger" onPress={remove} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

@@ -19,7 +19,13 @@ const FLAG_WIDTH = 64;
 const TABLE_WIDTH = COLUMNS.reduce((sum, c) => sum + c.width, FLAG_WIDTH);
 const width = (key: SortKey) => COLUMNS.find((c) => c.key === key)!.width;
 
-export function RecordsTable({ receipts }: { receipts: Receipt[] }) {
+type Props = {
+  receipts: Receipt[];
+  /** Called with the receipt's id when its row is tapped. */
+  onPressRow?: (id: string) => void;
+};
+
+export function RecordsTable({ receipts, onPressRow }: Props) {
   const theme = useTheme();
   const [sort, setSort] = useState(DEFAULT_SORT);
   const rows = useMemo(() => sortReceipts(receipts, sort), [receipts, sort]);
@@ -62,7 +68,7 @@ export function RecordsTable({ receipts }: { receipts: Receipt[] }) {
           style={styles.flex}
           data={rows}
           keyExtractor={(r) => r.id}
-          renderItem={({ item }) => <Row receipt={item} />}
+          renderItem={({ item }) => <Row receipt={item} onPress={onPressRow} />}
         />
 
         <View style={[styles.row, styles.footer, border, { backgroundColor: theme.backgroundElement }]}>
@@ -84,10 +90,22 @@ export function RecordsTable({ receipts }: { receipts: Receipt[] }) {
   );
 }
 
-function Row({ receipt }: { receipt: Receipt }) {
+function Row({ receipt, onPress }: { receipt: Receipt; onPress?: (id: string) => void }) {
   const theme = useTheme();
   return (
-    <View testID={`row-${receipt.id}`} style={[styles.row, { borderColor: theme.backgroundSelected }]}>
+    <Pressable
+      testID={`row-${receipt.id}`}
+      accessibilityRole="button"
+      accessibilityLabel={`Edit ${receipt.vendor ?? 'receipt'}, ${receipt.date ?? 'no date'}, ${formatMoney(receipt.totalAmount, receipt.currency)}`}
+      disabled={!onPress}
+      onPress={() => onPress?.(receipt.id)}
+      style={({ pressed }) => [
+        styles.row,
+        {
+          borderColor: theme.backgroundSelected,
+          backgroundColor: pressed ? theme.backgroundSelected : 'transparent',
+        },
+      ]}>
       <Cell width={width('date')}>{receipt.date ?? '—'}</Cell>
       <Cell width={width('vendor')}>{receipt.vendor ?? '—'}</Cell>
       <Cell width={width('category')}>{receipt.category}</Cell>
@@ -104,7 +122,7 @@ function Row({ receipt }: { receipt: Receipt }) {
           </ThemedText>
         ) : null}
       </View>
-    </View>
+    </Pressable>
   );
 }
 

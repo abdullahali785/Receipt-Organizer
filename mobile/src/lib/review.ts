@@ -80,6 +80,27 @@ export function validateReview(
   };
 }
 
+/** Screen wording: a fresh scan is reviewed then saved or discarded; a saved receipt is edited or deleted. */
+export function editorText(status: 'draft' | 'saved') {
+  return status === 'saved'
+    ? {
+        title: 'Edit receipt',
+        save: 'Save changes',
+        remove: 'Delete',
+        confirmTitle: 'Delete this receipt?',
+        confirmMessage: "This can't be undone.",
+        keep: 'Cancel',
+      }
+    : {
+        title: 'Review receipt',
+        save: 'Save receipt',
+        remove: 'Discard',
+        confirmTitle: 'Discard this receipt?',
+        confirmMessage: 'It will not be saved.',
+        keep: 'Keep editing',
+      };
+}
+
 export function todayIso(now: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;

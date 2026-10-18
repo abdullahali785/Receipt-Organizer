@@ -1,4 +1,5 @@
 import {
+  editorText,
   formFromReceipt,
   isValidIsoDate,
   missingFields,
@@ -85,5 +86,12 @@ describe('dates', () => {
 
   it('formats today in local time', () => {
     expect(todayIso(new Date(2026, 0, 5))).toBe('2026-01-05');
+  });
+});
+
+describe('editorText', () => {
+  it('reviews a fresh scan and edits a saved receipt', () => {
+    expect(editorText('draft')).toMatchObject({ title: 'Review receipt', remove: 'Discard' });
+    expect(editorText('saved')).toMatchObject({ title: 'Edit receipt', remove: 'Delete' });
   });
 });
