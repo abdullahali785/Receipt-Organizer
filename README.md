@@ -9,12 +9,6 @@ sortable table, and shows a monthly spending summary.
 Your expense data stays on your phone (SQLite). The server stores nothing, and the
 Anthropic API key never leaves the server.
 
-| Capture | Review | Records | Summary |
-|---|---|---|---|
-| _screenshot_ | _screenshot_ | _screenshot_ | _screenshot_ |
-
-<!-- Add images to docs/screenshots/ and replace the cells, e.g. ![Capture](docs/screenshots/capture.png) -->
-
 ## Features
 
 - **Extraction**: vendor, date, total, currency and line items from photos (JPG/PNG/GIF/WEBP) or PDFs, using Claude structured outputs so the JSON always matches the schema.
